@@ -127,6 +127,9 @@ impl AudioGraphBuilder {
             "Incompatible port types",
         );
 
+        push_unique(&mut src_runner.dependents, dst);
+        push_unique(&mut dst_runner.dependencies, src);
+
         // SAFETY: `edges` and `info.ports` have the same length. We know that `src_port` and
         // `dst_port` are valid port indices.
         let src_edge = unsafe { src_runner.edges.get_unchecked_mut(src_port) };
@@ -147,9 +150,6 @@ impl AudioGraphBuilder {
                 type_id: src_port_desc.type_id,
                 external: false,
             });
-
-            push_unique(&mut src_runner.dependents, dst);
-            push_unique(&mut dst_runner.dependencies, src);
 
             *src_edge = edge_id;
             *dst_edge = edge_id;
@@ -251,7 +251,6 @@ impl AudioGraphBuilder {
         };
 
         let mut scratchpad = Vec::new();
-        let mut zero_ops = Vec::new();
         let mut edges = self
             .edges
             .iter()
@@ -266,16 +265,11 @@ impl AudioGraphBuilder {
             .into_iter()
             .map(|node| {
                 let port_ptr_start = port_ptrs.len();
-                let zero_ops_start = zero_ops.len();
-                for (port_index, &edge_id) in node.edges.iter().enumerate() {
+                for &edge_id in node.edges.iter() {
                     if edge_id == EdgeId::MAX {
                         port_ptrs.push(None);
                         continue;
                     }
-
-                    // SAFETY: `edges` and `info.ports` have the same size, ensuring that
-                    // `port_index` is in range.
-                    let port_info = unsafe { node.info.ports.get_unchecked(port_index) };
 
                     // SAFETY: The IDs in `node.edges` are known to be valid.
                     let edge = unsafe { self.edges.get_unchecked(edge_id) };
@@ -299,44 +293,13 @@ impl AudioGraphBuilder {
                         unsafe { scratchpad.get_unchecked_mut(edge_runner.scratchpad_id) }
                     };
 
-                    // Clear the buffer if the current node is on the source side of the edge.
-                    if port_info.direction == PortDirection::Output {
-                        match edge.type_id {
-                            PortTypeId::Mono => {
-                                // SAFETY: We're accessing the data associated with this edge,
-                                // which is therefore known to have the edge's type.
-                                let buf =
-                                    unsafe { data.downcast_mut_unchecked::<AudioBuf<f32, 1>>() };
-
-                                zero_ops.extend(
-                                    buf.channels_mut()
-                                        .map(|slice| ZeroOp::new(slice.as_mut_ptr())),
-                                );
-                            }
-                            PortTypeId::Stereo => {
-                                // SAFETY: We're accessing the data associated with this edge,
-                                // which is therefore known to have the edge's type.
-                                let buf =
-                                    unsafe { data.downcast_mut_unchecked::<AudioBuf<f32, 2>>() };
-
-                                zero_ops.extend(
-                                    buf.channels_mut()
-                                        .map(|slice| ZeroOp::new(slice.as_mut_ptr())),
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-
                     port_ptrs.push(Some(data.as_raw()));
                 }
                 let port_ptr_end = port_ptrs.len();
-                let zero_ops_end = zero_ops.len();
 
                 NodeRunner {
                     processor: node.processor,
                     port_ptr_range: port_ptr_start..port_ptr_end,
-                    zero_ops_range: zero_ops_start..zero_ops_end,
                 }
             })
             .collect::<Vec<_>>();
@@ -354,7 +317,6 @@ impl AudioGraphBuilder {
             edges,
             scratchpad,
             port_ptrs,
-            zero_ops,
             schedule,
         }
     }
@@ -388,12 +350,6 @@ struct NodeRunner {
     ///
     /// Contains a valid range into [`AudioGraphRunner::port_ptrs`].
     port_ptr_range: Range<usize>,
-    /// List of buffers to clear before running the node.
-    ///
-    /// # Invariants
-    ///
-    /// Contains a valid range into [`AudioGraphRunner::zero_ops`].
-    zero_ops_range: Range<usize>,
 }
 
 struct EdgeRunner {
@@ -403,50 +359,6 @@ struct EdgeRunner {
     ///
     /// Is a valid index into [`AudioGraphRunner::scratchpad`].
     scratchpad_id: ScratchpadId,
-}
-
-/// Represents an "write zeros" operation into some buffer. The user is responsible for making sure
-/// the buffer referenced here remains valid once it is time to run the operation.
-///
-/// When calling [`ZeroOp::execute`], a number of items to clear must be provided, this structure
-/// only stores the size of the item to be cleared.
-#[derive(Debug, Clone, Copy)]
-struct ZeroOp {
-    // PERF: At some point we will make sure that `AudioBuf` is always aligned to some high
-    // alignment for SIMD. This invariant can be added here such that `execute` can be optimized
-    // to use SIMD always.
-    base: *mut u8,
-    item_size_in_bytes: usize,
-}
-
-// SAFETY: The user is responsible for making sure accesses to the underlying data is still valid
-// once it is used.
-unsafe impl Send for ZeroOp {}
-unsafe impl Sync for ZeroOp {}
-
-impl ZeroOp {
-    pub fn new<T>(p: *mut T) -> Self {
-        Self {
-            base: p.cast(),
-            item_size_in_bytes: size_of::<T>(),
-        }
-    }
-
-    /// # Safety
-    ///
-    /// The caller must ensure that the target data is valid for writing, that writing zeros
-    /// at that location is valid for the actual underlying datatype, and that at least
-    /// `sample_count` elements are present at that location.
-    pub unsafe fn execute(self, sample_count: usize) {
-        // SAFETY: Safety of this operation is upheld by the caller.
-        unsafe {
-            std::ptr::write_bytes(
-                self.base,
-                0x00,
-                self.item_size_in_bytes.unchecked_mul(sample_count),
-            )
-        };
-    }
 }
 
 #[derive(Default)]
@@ -463,13 +375,6 @@ pub struct AudioGraphRunner {
     ///
     /// Indexed by [`NodeRunner::port_ptr_range`].
     port_ptrs: Vec<Option<PortDataRaw>>,
-    /// # Invariants
-    ///
-    /// References data into `scratchpad`. Those pointers are stable so they aren't
-    /// invalidated even when scratchpad is reallocated.
-    ///
-    /// Indexed by [`NodeRunner::zero_ops_range`].
-    zero_ops: Vec<ZeroOp>,
     /// Topological sort of the graph, used when running the graph.
     ///
     /// # Invariants
@@ -515,15 +420,6 @@ impl AudioGraphRunner {
         for &node_id in self.schedule.iter() {
             // SAFETY: The node IDs in `schedule` are always valid.
             let node = unsafe { self.nodes.get_unchecked_mut(node_id) };
-
-            // SAFETY: The range stored in `zero_ops_range` is always valid for `zero_ops`.
-            let zero_ops = unsafe { self.zero_ops.get_unchecked(node.zero_ops_range.clone()) };
-            for zero_op in zero_ops {
-                // SAFETY: The data in `scratchpad` is still available for writing. Each `ZeroOp`
-                // object stored here reference `max_sample_count` elements, which is known to be
-                // larger than `sample_count`.
-                unsafe { zero_op.execute(ctx.sample_count) };
-            }
 
             // SAFETY: When building the graph, the `port_ptr_range` is set to the correct range
             // of pointers.
