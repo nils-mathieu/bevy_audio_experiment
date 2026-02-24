@@ -44,7 +44,7 @@ where
 
             for dst in buf.frames_mut().take(ctx.sample_count) {
                 for (dst, src) in dst.into_iter().zip((self.0)(ctx)) {
-                    *dst = src;
+                    *dst += src;
                 }
             }
         }
@@ -104,7 +104,7 @@ where
             {
                 let mapped = (self.0)(ctx, src.map(|value| *value));
                 for (dst, src) in dst.into_iter().zip(mapped) {
-                    *dst = src;
+                    *dst += src;
                 }
             }
         }
@@ -163,7 +163,7 @@ where
                 .take(ctx.sample_count)
             {
                 for (dst, src) in dst.into_iter().zip(src) {
-                    *dst = (self.0)(ctx, *src);
+                    *dst += (self.0)(ctx, *src);
                 }
             }
         }
@@ -288,8 +288,8 @@ impl Processor for MonoToStereo {
                 .zip(input.frames())
                 .take(ctx.sample_count)
             {
-                *dst_left = src;
-                *dst_right = src;
+                *dst_left += src;
+                *dst_right += src;
             }
         }
     }

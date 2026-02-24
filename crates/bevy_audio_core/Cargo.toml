@@ -16,3 +16,4 @@ bevy_app = { git = "https://github.com/bevyengine/bevy.git", default-features = 
 
 thiserror = { version = "1", default-features = false }
 rtrb = { version = "0.3", default-features = false }
+bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }

@@ -142,6 +142,7 @@ dependencies = [
  "bevy_ecs",
  "bevy_log",
  "bevy_platform",
+ "bytemuck",
  "rtrb",
  "thiserror 1.0.69",
 ]

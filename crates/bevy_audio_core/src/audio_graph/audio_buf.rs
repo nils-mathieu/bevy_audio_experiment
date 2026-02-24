@@ -1,3 +1,5 @@
+use bytemuck::Zeroable;
+
 pub struct AudioBuf<T, const C: usize> {
     // TODO: Store the frame count instead of the total sample count.
     // TODO: Align each channel buffer to 64 bytes so that we can use huge SIMD instructions when
@@ -6,11 +8,12 @@ pub struct AudioBuf<T, const C: usize> {
 }
 
 impl<T, const C: usize> AudioBuf<T, C> {
-    pub fn with_capacity(capacity: usize, fill: impl FnMut() -> T) -> Self {
+    pub fn with_capacity(capacity: usize) -> Self
+    where
+        T: Zeroable,
+    {
         Self {
-            data: std::iter::repeat_with(fill)
-                .take(capacity.checked_mul(C).expect("Capacity overflow"))
-                .collect(),
+            data: bytemuck::zeroed_slice_box(capacity.checked_mul(C).expect("Capacity overflow")),
         }
     }
 
@@ -25,6 +28,14 @@ impl<T, const C: usize> AudioBuf<T, C> {
 
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         &mut self.data
+    }
+
+    pub fn clear(&mut self)
+    where
+        T: Zeroable,
+    {
+        // SAFETY: `T` is zeroable, so we can safely write zeros on it.
+        unsafe { std::ptr::write_bytes(self.data.as_mut_ptr(), 0x00, self.data.len()) };
     }
 
     /// # Safety
@@ -59,6 +70,20 @@ impl<T, const C: usize> AudioBuf<T, C> {
         }
     }
 
+    pub fn channels(&self) -> impl Iterator<Item = &[T]> {
+        let p = self.data.as_ptr();
+        let frames = self.frame_count();
+        // SAFETY: `channel < C`.
+        (0..C).map(move |channel| unsafe { get_channel_unchecked(p, frames, channel) })
+    }
+
+    pub fn channels_mut(&mut self) -> impl Iterator<Item = &mut [T]> {
+        let p = self.data.as_mut_ptr();
+        let frames = self.frame_count();
+        // SAFETY: `channel < C`.
+        (0..C).map(move |channel| unsafe { get_channel_unchecked_mut(p, frames, channel) })
+    }
+
     /// # Safety
     ///
     /// * `channel` must be less than `C`.
@@ -69,7 +94,7 @@ impl<T, const C: usize> AudioBuf<T, C> {
         debug_assert!(frame < self.frame_count());
 
         // SAFETY: Caller must ensure that the channel index and frame index are within bounds.
-        unsafe { self.channel_unchecked(channel).get_unchecked(frame) }
+        unsafe { get_unchecked(self.data.as_ptr(), self.frame_count(), channel, frame) }
     }
 
     /// # Safety
@@ -82,7 +107,7 @@ impl<T, const C: usize> AudioBuf<T, C> {
         debug_assert!(frame < self.frame_count());
 
         // SAFETY: Caller must ensure that the channel index and frame index are within bounds.
-        unsafe { self.channel_unchecked_mut(channel).get_unchecked_mut(frame) }
+        unsafe { get_unchecked_mut(self.data.as_mut_ptr(), self.frame_count(), channel, frame) }
     }
 
     pub fn frames(&self) -> impl Iterator<Item = [&T; C]> {
@@ -118,6 +143,18 @@ impl<T, const C: usize> AudioBuf<T, C> {
             (0..C).map(move |channel| unsafe { get_unchecked_mut(p, frames, channel, frame) })
         })
     }
+}
+
+unsafe fn get_channel_unchecked<'a, T>(p: *const T, frames: usize, channel: usize) -> &'a [T] {
+    unsafe { core::slice::from_raw_parts(p.add(channel.unchecked_mul(frames)), frames) }
+}
+
+unsafe fn get_channel_unchecked_mut<'a, T>(
+    p: *mut T,
+    frames: usize,
+    channel: usize,
+) -> &'a mut [T] {
+    unsafe { core::slice::from_raw_parts_mut(p.add(channel.unchecked_mul(frames)), frames) }
 }
 
 unsafe fn get_unchecked<'a, T>(p: *const T, frames: usize, c: usize, f: usize) -> &'a T {
