@@ -43,14 +43,6 @@ pub struct AudioGraphBuilder {
 }
 
 impl AudioGraphBuilder {
-    #[track_caller]
-    pub fn depends_on(&self, a: NodeId, b: NodeId) -> bool {
-        assert!(a < self.nodes.len(), "Node IDs must be valid");
-
-        // SAFETY: We just made sure that `a` and `b` are valid node IDs.
-        unsafe { self.depends_on_unchecked(a, b) }
-    }
-
     /// # Safety
     ///
     /// `a` must be a valid node ID.
@@ -101,7 +93,7 @@ impl AudioGraphBuilder {
 
         // SAFETY: `src` has been checked to be a valid node.
         assert!(
-            !unsafe { self.depends_on_unchecked(dst, src) },
+            !unsafe { self.depends_on_unchecked(src, dst) },
             "Cycle introduced"
         );
 
@@ -390,10 +382,14 @@ fn create_port_data(type_id: PortTypeId, ctx: &mut SetupCtx) -> PortDataBox {
 struct NodeRunner {
     processor: Box<dyn Processor>,
 
+    /// Range of ports that will be passed to [`Processor::run`] when running the graph.
+    ///
     /// # Invariants
     ///
     /// Contains a valid range into [`AudioGraphRunner::port_ptrs`].
     port_ptr_range: Range<usize>,
+    /// List of buffers to clear before running the node.
+    ///
     /// # Invariants
     ///
     /// Contains a valid range into [`AudioGraphRunner::zero_ops`].
@@ -401,14 +397,24 @@ struct NodeRunner {
 }
 
 struct EdgeRunner {
+    /// Index of the edge's data into the scratchpad.
+    ///
     /// # Invariants
     ///
     /// Is a valid index into [`AudioGraphRunner::scratchpad`].
     scratchpad_id: ScratchpadId,
 }
 
+/// Represents an "write zeros" operation into some buffer. The user is responsible for making sure
+/// the buffer referenced here remains valid once it is time to run the operation.
+///
+/// When calling [`ZeroOp::execute`], a number of items to clear must be provided, this structure
+/// only stores the size of the item to be cleared.
 #[derive(Debug, Clone, Copy)]
 struct ZeroOp {
+    // PERF: At some point we will make sure that `AudioBuf` is always aligned to some high
+    // alignment for SIMD. This invariant can be added here such that `execute` can be optimized
+    // to use SIMD always.
     base: *mut u8,
     item_size_in_bytes: usize,
 }
@@ -679,5 +685,112 @@ mod tests {
         data.as_mut_slice()[2] = 4.0;
 
         runner.run(&mut run_ctx(3));
+    }
+
+    #[test]
+    #[should_panic = "`src` node is invalid"]
+    fn connect_invalid_src_node() {
+        let mut builder = AudioGraphRunner::builder();
+        let valid_id = builder.insert(Box::new(assert_sink([])));
+        builder.connect(12, 0, valid_id, 0);
+    }
+
+    #[test]
+    #[should_panic = "`dst` node is invalid"]
+    fn connect_invalid_dst_node() {
+        let mut builder = AudioGraphRunner::builder();
+        let valid_id = builder.insert(Box::new(audio_iter([])));
+        builder.connect(valid_id, 0, 12, 0);
+    }
+
+    #[test]
+    #[should_panic = "Can't connect a node to itself"]
+    fn connect_node_to_itself() {
+        let mut builder = AudioGraphRunner::builder();
+        let valid_id = builder.insert(Box::new(map_audio(|x| x)));
+        builder.connect(valid_id, 1, valid_id, 0);
+    }
+
+    #[test]
+    #[should_panic = "Cycle introduced"]
+    fn connect_creates_cycle() {
+        let mut builder = AudioGraphRunner::builder();
+        let a = builder.insert(Box::new(map_audio(|x| x)));
+        let b = builder.insert(Box::new(map_audio(|x| x)));
+        let c = builder.insert(Box::new(map_audio(|x| x)));
+        builder.connect(a, 1, b, 0);
+        builder.connect(b, 1, c, 0);
+        builder.connect(c, 1, a, 0);
+    }
+
+    #[test]
+    #[should_panic = "`src_port` is invalid"]
+    fn connect_invalid_src_port() {
+        let mut builder = AudioGraphRunner::builder();
+        let src_id = builder.insert(Box::new(audio_iter([])));
+        let dst_id = builder.insert(Box::new(assert_sink([])));
+        builder.connect(src_id, 12, dst_id, 0);
+    }
+
+    #[test]
+    #[should_panic = "`dst_port` is invalid"]
+    fn connect_invalid_dst_port() {
+        let mut builder = AudioGraphRunner::builder();
+        let src_id = builder.insert(Box::new(audio_iter([])));
+        let dst_id = builder.insert(Box::new(assert_sink([])));
+        builder.connect(src_id, 0, dst_id, 12);
+    }
+
+    #[test]
+    #[should_panic = "`src_port` must be an output port"]
+    fn connect_invalid_src_port_direction() {
+        let mut builder = AudioGraphRunner::builder();
+        let src_id = builder.insert(Box::new(assert_sink([])));
+        let dst_id = builder.insert(Box::new(assert_sink([])));
+        builder.connect(src_id, 0, dst_id, 0);
+    }
+
+    #[test]
+    #[should_panic = "`dst_port` must be an input port"]
+    fn connect_invalid_dst_port_direction() {
+        let mut builder = AudioGraphRunner::builder();
+        let src_id = builder.insert(Box::new(audio_iter([])));
+        let dst_id = builder.insert(Box::new(audio_iter([])));
+        builder.connect(src_id, 0, dst_id, 0);
+    }
+
+    #[test]
+    #[should_panic = "Incompatible port types"]
+    fn connect_incompatible_ports() {
+        let mut builder = AudioGraphRunner::builder();
+
+        let src_id = builder.insert(Box::new(processors::audio_fn(|_: &mut RunCtx| [0.0, 0.0])));
+        let dst_id = builder.insert(Box::new(processors::sink_fn(
+            |_: &mut RunCtx, _: Option<&AudioBuf<f32, 1>>| (),
+        )));
+
+        builder.connect(src_id, 0, dst_id, 0);
+    }
+
+    #[test]
+    #[should_panic = "`node` is not a valid node"]
+    fn connect_external_invalid_node() {
+        let mut builder = AudioGraphRunner::builder();
+        builder.connect_external(12, 0);
+    }
+
+    #[test]
+    #[should_panic = "`port` is not a valid port for the node"]
+    fn connect_external_invalid_port() {
+        let mut builder = AudioGraphRunner::builder();
+        let id = builder.insert(Box::new(audio_iter([])));
+        builder.connect_external(id, 100);
+    }
+
+    #[test]
+    #[should_panic = "`edge` is not a valid edge"]
+    fn make_external_fails_with_invalid_edge() {
+        let mut builder = AudioGraphRunner::builder();
+        builder.make_external(100);
     }
 }
