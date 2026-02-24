@@ -1,5 +1,7 @@
 pub struct AudioBuf<T, const C: usize> {
     // TODO: Store the frame count instead of the total sample count.
+    // TODO: Align each channel buffer to 64 bytes so that we can use huge SIMD instructions when
+    // iterating over it.
     data: Box<[T]>,
 }
 

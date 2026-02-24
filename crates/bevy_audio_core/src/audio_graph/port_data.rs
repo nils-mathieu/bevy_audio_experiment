@@ -61,14 +61,20 @@ impl PortDataRaw {
         Self(x.cast())
     }
 
-    pub fn type_id(self) -> PortTypeId {
-        // SAFETY: `PortDataRaw` always references a valid `PortDataInner`, and the first field
-        // of that structure is the type ID.
+    /// # Safety
+    ///
+    /// This [`PortDataRaw`] instance must be valid.
+    pub unsafe fn type_id(self) -> PortTypeId {
+        // SAFETY: The safety is upheld by the caller.
         unsafe { self.0.cast::<PortTypeId>().read() }
     }
 
-    pub fn is<T: PortType>(self) -> bool {
-        self.type_id() == T::PORT_TYPE_ID
+    /// # Safety
+    ///
+    /// This [`PortDataRaw`] instance must be valid.
+    pub unsafe fn is<T: PortType>(self) -> bool {
+        // SAFETY: The safety is upheld by the caller.
+        unsafe { self.type_id() == T::PORT_TYPE_ID }
     }
 
     /// # Safety
@@ -76,10 +82,11 @@ impl PortDataRaw {
     /// * The [`PortData`] instance must contain a value of type `T`.
     /// * It must be safe to access the value for the lifetime `'a`.
     pub unsafe fn downcast_ref_unchecked<'a, T: PortType>(self) -> &'a T {
-        debug_assert!(self.is::<T>());
-
         // SAFETY: The safety is upheld by the caller.
-        unsafe { &self.0.cast::<PortDataInner<T>>().as_ref().data }
+        unsafe {
+            debug_assert!(self.is::<T>());
+            &self.0.cast::<PortDataInner<T>>().as_ref().data
+        }
     }
 
     /// # Safety
@@ -87,10 +94,11 @@ impl PortDataRaw {
     /// * The [`PortData`] instance must contain a value of type `T`.
     /// * It must be safe to access the value for the lifetime `'a`.
     pub unsafe fn downcast_mut_unchecked<'a, T: PortType>(self) -> &'a mut T {
-        debug_assert!(self.is::<T>());
-
         // SAFETY: The safety is upheld by the caller.
-        unsafe { &mut self.0.cast::<PortDataInner<T>>().as_mut().data }
+        unsafe {
+            debug_assert!(self.is::<T>());
+            &mut self.0.cast::<PortDataInner<T>>().as_mut().data
+        }
     }
 }
 
@@ -102,6 +110,12 @@ impl PortDataRaw {
 // and it is itself `Send` and `Sync`, so that doesn't change the reasoning.
 unsafe impl Send for PortDataRaw {}
 unsafe impl Sync for PortDataRaw {}
+
+impl core::fmt::Pointer for PortDataRaw {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        core::fmt::Pointer::fmt(&self.0, f)
+    }
+}
 
 pub struct PortDataBox(PortDataRaw);
 
@@ -117,11 +131,13 @@ impl PortDataBox {
     }
 
     pub fn type_id(&self) -> PortTypeId {
-        self.0.type_id()
+        // SAFETY: The data we reference is always valid.
+        unsafe { self.0.type_id() }
     }
 
     pub fn is<T: PortType>(&self) -> bool {
-        self.0.is::<T>()
+        // SAFETY: The data we reference is always valid.
+        unsafe { self.0.is::<T>() }
     }
 
     /// # Safety

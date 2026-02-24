@@ -4,93 +4,42 @@ use {
         SetupCtx,
     },
     crate::audio_graph::PortDirection,
-    core::{cell::Cell, hint::assert_unchecked},
+    std::ops::Range,
 };
 
 pub type NodeId = usize;
 pub type EdgeId = usize;
+pub type ScratchpadId = usize;
 
-struct NodeRunner {
+struct NodeEntry {
     info: ProcessorInfo,
     processor: Box<dyn Processor>,
 
     /// # Invariants
     ///
-    /// Can be either a valid indices into the [`AudioGraphRunner::edges`] list, or `EdgeId::MAX`
+    /// Can be either a valid indices into the [`AudioGraphBuilder::edges`] list, or `EdgeId::MAX`
     /// (unconnected port).
     edges: Box<[EdgeId]>,
     /// # Invariants
     ///
-    /// Contains no duplicates. All [`NodeId`]s are valid into the [`AudioGraphRunner::nodes`] list.
+    /// Contains no duplicates. All [`NodeId`]s are valid into the [`AudioGraphBuilder::nodes`] list.
     dependencies: Vec<NodeId>,
     /// # Invariants
     ///
-    /// Contains no duplicates. All [`NodeId`]s are valid into the [`AudioGraphRunner::nodes`] list.
+    /// Contains no duplicates. All [`NodeId`]s are valid into the [`AudioGraphBuilder::nodes`] list.
     dependents: Vec<NodeId>,
-
-    /// Only used during graph execution. Contains the number of dependencies of this node
-    /// that haven't yet finished executing.
-    ///
-    /// When this number reaches zero, the node is scheduled for running.
-    ///
-    /// NOTE: Can be turned into an `AtomicUsize` if we want to execute the graph in parallel.
-    pending_dependencies: Cell<usize>,
-}
-
-#[derive(Default)]
-struct PortDataAllocator {
-    stereo: Vec<PortDataBox>,
-    mono: Vec<PortDataBox>,
-    f32: Vec<PortDataBox>,
-    bool: Vec<PortDataBox>,
-}
-
-impl PortDataAllocator {
-    pub fn allocate(&mut self, type_id: PortTypeId) -> Option<PortDataBox> {
-        match type_id {
-            PortTypeId::Stereo => self.stereo.pop(),
-            PortTypeId::Mono => self.mono.pop(),
-            PortTypeId::F32 => self.f32.pop(),
-            PortTypeId::Bool => self.bool.pop(),
-        }
-    }
-
-    pub fn deallocate(&mut self, data: PortDataBox) {
-        match data.type_id() {
-            PortTypeId::Stereo => self.stereo.push(data),
-            PortTypeId::Mono => self.mono.push(data),
-            PortTypeId::F32 => self.f32.push(data),
-            PortTypeId::Bool => self.bool.push(data),
-        }
-    }
 }
 
 #[derive(Debug)]
-pub struct EdgeData {
+pub struct EdgeEntry {
     type_id: PortTypeId,
-
-    /// # Invariants
-    ///
-    /// * If `external` is `true`, then this is always `Some(_)` after the graph
-    ///   is built. External edges have their own [`PortDataBox`] which isn't taken from the
-    ///   allocator.
-    /// * If `external` is `false`, then this is `Some(_)` during graph execution if the node
-    ///   has `pending_inputs > 0`.
-    data: Option<PortDataBox>,
-
-    total_inputs: usize,
-    /// # Invariants
-    ///
-    /// This is always less or equal to `total_inputs`.
-    pending_inputs: usize,
-
     external: bool,
 }
 
 #[derive(Default)]
 pub struct AudioGraphBuilder {
-    nodes: Vec<NodeRunner>,
-    edges: Vec<EdgeData>,
+    nodes: Vec<NodeEntry>,
+    edges: Vec<EdgeEntry>,
 }
 
 impl AudioGraphBuilder {
@@ -128,13 +77,12 @@ impl AudioGraphBuilder {
         let id = self.nodes.len();
         let info = processor.info();
         let edges = info.ports.iter().map(|_| usize::MAX).collect();
-        self.nodes.push(NodeRunner {
+        self.nodes.push(NodeEntry {
             info,
             edges,
             processor,
             dependencies: Vec::new(),
             dependents: Vec::new(),
-            pending_dependencies: Cell::new(0),
         });
         id
     }
@@ -199,20 +147,12 @@ impl AudioGraphBuilder {
         // 2. Otherwise, create a new one.
 
         if *src_edge != usize::MAX {
-            // SAFETY: When not `usize::MAX`, edge indices are valid.
-            let edge_data = unsafe { self.edges.get_unchecked_mut(*src_edge) };
-
             *dst_edge = *src_edge;
-            edge_data.total_inputs += 1;
-
             *src_edge
         } else {
             let edge_id = self.edges.len();
-            self.edges.push(EdgeData {
+            self.edges.push(EdgeEntry {
                 type_id: src_port_desc.type_id,
-                data: None,
-                total_inputs: 1,
-                pending_inputs: 0,
                 external: false,
             });
 
@@ -245,27 +185,18 @@ impl AudioGraphBuilder {
 
         if *edge_idx == usize::MAX {
             let edge_id = self.edges.len();
-            self.edges.push(EdgeData {
+            self.edges.push(EdgeEntry {
                 type_id: port_info.type_id,
-                data: None,
-                total_inputs: (port_info.direction == PortDirection::Input) as usize,
-                pending_inputs: 0,
                 external: true,
             });
 
             *edge_idx = edge_id;
-
             edge_id
         } else {
             // SAFETY: The indices in `edges` are valid indices.
             let edge = unsafe { self.edges.get_unchecked_mut(*edge_idx) };
 
             edge.external = true;
-
-            if port_info.direction == PortDirection::Input {
-                edge.total_inputs += 1;
-            }
-
             *edge_idx
         }
     }
@@ -282,73 +213,178 @@ impl AudioGraphBuilder {
             node.processor.setup(ctx);
         }
 
-        let max_port_count = self
-            .nodes
+        let schedule = {
+            let mut result = Vec::new();
+            let mut pending_dependencies = self
+                .nodes
+                .iter()
+                .map(|node| node.dependencies.len())
+                .collect::<Vec<_>>();
+            let mut to_visit = Vec::new();
+
+            to_visit.extend(
+                self.nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| node.dependencies.is_empty())
+                    .map(|(id, _)| id),
+            );
+
+            while let Some(node_id) = to_visit.pop() {
+                result.push(node_id);
+
+                // SAFETY: The node indices in `to_visit` are valid indices into `self.nodes`.
+                let node = unsafe { self.nodes.get_unchecked(node_id) };
+
+                for &dep in node.dependents.iter() {
+                    // SAFETY: `pending_dependencies` has the same length as `self.nodes`, which
+                    // ensures that `dep` is valid.
+                    let in_degree = unsafe { pending_dependencies.get_unchecked_mut(dep) };
+
+                    debug_assert!(*in_degree > 0);
+                    *in_degree -= 1;
+                    if *in_degree == 0 {
+                        to_visit.push(dep);
+                    }
+                }
+            }
+
+            debug_assert_eq!(
+                result.len(),
+                self.nodes.len(),
+                "Cycle detected while building the graph",
+            );
+
+            result
+        };
+
+        let mut scratchpad = Vec::new();
+        let mut edges = self
+            .edges
             .iter()
-            .map(|x| x.edges.len())
-            .max()
-            .unwrap_or_default();
-        let port_data = Vec::with_capacity(max_port_count);
+            .map(|_| EdgeRunner {
+                scratchpad_id: usize::MAX,
+            })
+            .collect::<Vec<_>>();
+        let mut port_ptrs = Vec::new();
 
-        // TODO: The queue must be large enough to hold the maximum number of nodes that might
-        // become ready at once. `self.nodes.len()` is an upper bound but it might be possible to
-        // compute a more efficient value.
-        let ready_queue = Vec::with_capacity(self.nodes.len());
+        let nodes = self
+            .nodes
+            .into_iter()
+            .map(|node| {
+                let port_ptr_start = port_ptrs.len();
+                for &edge_id in node.edges.iter() {
+                    if edge_id == EdgeId::MAX {
+                        port_ptrs.push(None);
+                        continue;
+                    }
 
-        // TODO: Only allocate what is needed instead of one buffer per edge.
-        let mut port_data_allocator = PortDataAllocator::default();
-        for edge in self.edges.iter_mut() {
-            let data = match edge.type_id {
-                PortTypeId::Stereo => PortDataBox::new(AudioBuf::<f32, 2>::with_capacity(
-                    ctx.max_sample_count,
-                    || 0.0,
-                )),
-                PortTypeId::Mono => PortDataBox::new(AudioBuf::<f32, 1>::with_capacity(
-                    ctx.max_sample_count,
-                    || 0.0,
-                )),
-                PortTypeId::F32 => PortDataBox::new(Discrete::<f32>::with_capacity(
-                    ctx.max_sample_count / 16,
-                    0.0,
-                )),
-                PortTypeId::Bool => PortDataBox::new(Discrete::<bool>::with_capacity(
-                    ctx.max_sample_count / 16,
-                    false,
-                )),
-            };
+                    // SAFETY: The IDs in `node.edges` are known to be valid.
+                    let edge = unsafe { self.edges.get_unchecked(edge_id) };
 
-            if edge.external {
-                edge.data = Some(data);
-            } else {
-                port_data_allocator.deallocate(data);
+                    // SAFETY: `edges` has the same length as `self.edges`, so the index is also
+                    // valid for this list.
+                    let edge_runner = unsafe { edges.get_unchecked_mut(edge_id) };
+
+                    let data = if edge_runner.scratchpad_id == usize::MAX {
+                        edge_runner.scratchpad_id = scratchpad.len();
+
+                        // FIXME: Don't add a new scratchpad element if one is already known to be
+                        // available and unused by any node. When the edge is external, a new
+                        // scratchpad element is always used.
+                        scratchpad.push(create_port_data(edge.type_id, ctx));
+
+                        // SAFETY: We just added that element.
+                        unsafe { scratchpad.last_mut().unwrap_unchecked() }
+                    } else {
+                        // SAFETY: The `scratchpad_id` stored in edge runners are valid.
+                        unsafe { scratchpad.get_unchecked_mut(edge_runner.scratchpad_id) }
+                    };
+
+                    port_ptrs.push(Some(data.as_raw()));
+                }
+                let port_ptr_end = port_ptrs.len();
+
+                NodeRunner {
+                    processor: node.processor,
+                    port_ptr_range: port_ptr_start..port_ptr_end,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        #[cfg(debug_assertions)]
+        {
+            for edge in edges.iter() {
+                assert!(edge.scratchpad_id != usize::MAX);
             }
         }
 
         AudioGraphRunner {
             max_sample_count: ctx.max_sample_count,
-            nodes: self.nodes,
-            edges: self.edges,
-            port_data_allocator,
-            port_data,
-            ready_queue,
+            nodes,
+            edges,
+            scratchpad,
+            port_ptrs,
+            schedule,
         }
     }
+}
+
+fn create_port_data(type_id: PortTypeId, ctx: &mut SetupCtx) -> PortDataBox {
+    match type_id {
+        PortTypeId::Stereo => PortDataBox::new(AudioBuf::<f32, 2>::with_capacity(
+            ctx.max_sample_count,
+            || 0.0,
+        )),
+        PortTypeId::Mono => PortDataBox::new(AudioBuf::<f32, 1>::with_capacity(
+            ctx.max_sample_count,
+            || 0.0,
+        )),
+        PortTypeId::F32 => PortDataBox::new(Discrete::<f32>::with_capacity(
+            ctx.max_sample_count / 16,
+            0.0,
+        )),
+        PortTypeId::Bool => PortDataBox::new(Discrete::<bool>::with_capacity(
+            ctx.max_sample_count / 16,
+            false,
+        )),
+    }
+}
+
+struct NodeRunner {
+    processor: Box<dyn Processor>,
+
+    /// # Invariants
+    ///
+    /// Contains a valid range into [`AudioGraphRunner::port_ptrs`].
+    port_ptr_range: Range<usize>,
+}
+
+struct EdgeRunner {
+    /// # Invariants
+    ///
+    /// Is a valid index into [`AudioGraphRunner::scratchpad`].
+    scratchpad_id: ScratchpadId,
 }
 
 #[derive(Default)]
 pub struct AudioGraphRunner {
     max_sample_count: usize,
     nodes: Vec<NodeRunner>,
-    edges: Vec<EdgeData>,
-    port_data_allocator: PortDataAllocator,
-    port_data: Vec<Option<PortDataRaw>>,
+    edges: Vec<EdgeRunner>,
 
+    scratchpad: Vec<PortDataBox>,
     /// # Invariants
     ///
-    /// * Must be large enough to hold all nodes that might become ready at the same time during
-    ///   graph execution without reallocating.
-    /// * All stored node IDs are valid indices into `self.nodes`.
-    ready_queue: Vec<NodeId>,
+    /// Contains valid pointers owned by `scratchpad`. Those pointers are stable so they aren't
+    /// invalidated even when scratchpad is reallocated.
+    port_ptrs: Vec<Option<PortDataRaw>>,
+    /// Topological sort of the graph, used when running the graph.
+    ///
+    /// # Invariants
+    ///
+    /// Contains valid indices into `nodes`.
+    schedule: Vec<NodeId>,
 }
 
 impl AudioGraphRunner {
@@ -369,150 +405,34 @@ impl AudioGraphRunner {
     }
 
     pub fn get_external_edge(&self, edge: EdgeId) -> Option<&PortDataBox> {
-        // SAFETY: If `external` is set, then the `data` is always set.
+        // SAFETY: The `scratchpad_id` stored in edges is always valid.
         self.edges
             .get(edge)
-            .filter(|x| x.external)
-            .map(|x| unsafe { x.data.as_ref().unwrap_unchecked() })
+            .map(|edge| unsafe { self.scratchpad.get_unchecked(edge.scratchpad_id) })
     }
 
     pub fn get_external_edge_mut(&mut self, edge: EdgeId) -> Option<&mut PortDataBox> {
-        // SAFETY: If `external` is set, then the `data` is always set.
+        // SAFETY: The `scratchpad_id` stored in edges is always valid.
         self.edges
-            .get_mut(edge)
-            .filter(|x| x.external)
-            .map(|x| unsafe { x.data.as_mut().unwrap_unchecked() })
-    }
-
-    pub fn get_edge(&self, node: NodeId, port: usize) -> Option<EdgeId> {
-        self.nodes
-            .get(node)
-            .and_then(|node| node.edges.get(port))
-            .copied()
-            .filter(|&edge| edge != usize::MAX)
+            .get(edge)
+            .map(|edge| unsafe { self.scratchpad.get_unchecked_mut(edge.scratchpad_id) })
     }
 
     pub fn run(&mut self, ctx: &mut RunCtx) {
         assert!(ctx.sample_count <= self.max_sample_count);
 
-        self.ready_queue.clear();
-
-        for (node_id, node) in self.nodes.iter_mut().enumerate() {
-            *node.pending_dependencies.get_mut() = node.dependencies.len();
-            if *node.pending_dependencies.get_mut() == 0 {
-                self.ready_queue.push(node_id);
-            }
-        }
-
-        for edge in self.edges.iter_mut() {
-            edge.pending_inputs = edge.total_inputs;
-        }
-
-        while let Some(node_id) = self.ready_queue.pop() {
-            // SAFETY: The nodes in `ready_queue` are always valid.
+        for &node_id in self.schedule.iter() {
+            // SAFETY: The node IDs in `schedule` are always valid.
             let node = unsafe { self.nodes.get_unchecked_mut(node_id) };
 
-            self.port_data.clear();
-            debug_assert!(self.port_data.capacity() >= node.edges.len());
-            for i in 0..node.edges.len() {
-                // SAFETY: `i < edges.len()`
-                let edge_idx = unsafe { *node.edges.get_unchecked(i) };
-
-                if edge_idx == usize::MAX {
-                    self.port_data.push(None);
-                    continue;
-                }
-
-                // SAFETY: The edges in `node.edges` are always valid.
-                let edge = unsafe { self.edges.get_unchecked_mut(edge_idx) };
-
-                // SAFETY: `info.ports` has the same length as `edges`, and `i < edges.len()`.
-                let port_info = unsafe { node.info.ports.get_unchecked(i) };
-
-                debug_assert_eq!(port_info.type_id, edge.type_id);
-
-                let edge_data = match port_info.direction {
-                    PortDirection::Output => {
-                        // This is an output. We need to allocate a new buffer and initialize
-                        // the edge data.
-
-                        if edge.external {
-                            debug_assert!(edge.data.is_some());
-
-                            // SAFETY: If the edge is external, `data` is always set.
-                            unsafe { edge.data.as_mut().unwrap_unchecked() }
-                        } else {
-                            let data = self.port_data_allocator.allocate(port_info.type_id);
-                            debug_assert!(data.is_some());
-                            // SAFETY: During `build()`, sufficient buffers are pre-allocated for
-                            // all edges. Non-external edges have their buffers deallocated to the
-                            // allocator, ensuring availability during execution.
-                            let data = unsafe { data.unwrap_unchecked() };
-
-                            debug_assert!(edge.data.is_none());
-
-                            // SAFETY: Non-external output edges have `data = None` at the start
-                            // of processing. This hint eliminates the branch in `Option::insert`
-                            // that would drop an existing value.
-                            unsafe { assert_unchecked(edge.data.is_none()) };
-
-                            edge.data.insert(data)
-                        }
-                    }
-                    PortDirection::Input => {
-                        debug_assert!(edge.data.is_some());
-                        debug_assert!(edge.pending_inputs > 0);
-
-                        edge.pending_inputs -= 1;
-
-                        // SAFETY: Input ports only execute after their source has produced output.
-                        // The topological ordering guarantees that `data` is `Some` when inputs
-                        // are processed.
-                        unsafe { edge.data.as_mut().unwrap_unchecked() }
-                    }
-                };
-
-                self.port_data.push(Some(edge_data.as_raw()));
-            }
-
-            // SAFETY: We just initialized `self.port_data` so it contains the ports for this
-            // processor.
-            unsafe { node.processor.run(ctx, self.port_data.as_slice()) };
-
-            for i in 0..node.edges.len() {
-                // SAFETY: Loop bound ensures `i < node.edges.len()`
-                let edge_idx = unsafe { *node.edges.get_unchecked(i) };
-
-                if edge_idx == usize::MAX {
-                    continue;
-                }
-
-                // SAFETY: The edges in `node.edges` are always valid.
-                let edge = unsafe { self.edges.get_unchecked_mut(edge_idx) };
-
-                if edge.pending_inputs == 0 && !edge.external {
-                    debug_assert!(edge.data.is_some());
-
-                    // SAFETY: Non-external edges with `pending_inputs = 0` have just finished processing
-                    // all inputs, so `data` must be `Some` (it was set when the output was produced).
-                    self.port_data_allocator
-                        .deallocate(unsafe { edge.data.take().unwrap_unchecked() });
-                }
-            }
-
-            // SAFETY: The nodes in `ready_queue` are always valid.
-            let node = unsafe { self.nodes.get_unchecked(node_id) };
-            for &dependent_id in node.dependents.iter() {
-                // SAFETY: The nodes in `dependents` are always valid.
-                let dependent = unsafe { self.nodes.get_unchecked(dependent_id) };
-
-                let prev = dependent.pending_dependencies.get();
-                dependent.pending_dependencies.set(prev - 1);
-                if prev == 1 {
-                    debug_assert!(self.ready_queue.len() < self.ready_queue.capacity());
-                    self.ready_queue.push(dependent_id);
-                }
-            }
+            // SAFETY: When building the graph, the `port_ptr_range` is set to the correct range
+            // of pointers.
+            unsafe {
+                node.processor.run(
+                    ctx,
+                    self.port_ptrs.get_unchecked(node.port_ptr_range.clone()),
+                )
+            };
         }
     }
 }
