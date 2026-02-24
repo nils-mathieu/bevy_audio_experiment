@@ -42,6 +42,7 @@ where
             // SAFETY: Caller must ensure that the port is of the correct type.
             let buf = unsafe { output.downcast_mut_unchecked::<AudioBuf<f32, C>>() };
 
+            buf.set_silent(false);
             for dst in buf.frames_mut().take(ctx.sample_count) {
                 for (dst, src) in dst.into_iter().zip((self.0)(ctx)) {
                     *dst = src;
@@ -96,6 +97,8 @@ where
             // SAFETY: Caller must ensure that the port is of the correct type.
             let input_buf = unsafe { input.downcast_ref_unchecked::<AudioBuf<f32, C>>() };
             let output_buf = unsafe { output.downcast_mut_unchecked::<AudioBuf<f32, C>>() };
+
+            output_buf.set_silent(false);
 
             for (dst, src) in output_buf
                 .frames_mut()
@@ -156,6 +159,8 @@ where
             // SAFETY: Caller must ensure that the port is of the correct type.
             let input_buf = unsafe { input.downcast_ref_unchecked::<AudioBuf<f32, C>>() };
             let output_buf = unsafe { output.downcast_mut_unchecked::<AudioBuf<f32, C>>() };
+
+            output_buf.set_silent(false);
 
             for (dst, src) in output_buf
                 .frames_mut()
@@ -290,6 +295,78 @@ impl Processor for MonoToStereo {
             {
                 *dst_left = src;
                 *dst_right = src;
+            }
+        }
+    }
+}
+
+pub fn sum_audio<const C: usize>(inputs: usize) -> SumAudio<C>
+where
+    AudioBuf<f32, C>: PortType,
+{
+    SumAudio { inputs }
+}
+
+pub struct SumAudio<const C: usize> {
+    inputs: usize,
+}
+
+impl<const C: usize> Processor for SumAudio<C>
+where
+    AudioBuf<f32, C>: PortType,
+{
+    fn info(&self) -> ProcessorInfo {
+        ProcessorInfo {
+            ports: core::iter::once(PortDescription {
+                name: Some(Cow::Borrowed("output")),
+                direction: PortDirection::Input,
+                type_id: <AudioBuf<f32, C>>::PORT_TYPE_ID,
+            })
+            .chain((0..self.inputs).map(|_| PortDescription {
+                name: None,
+                direction: PortDirection::Input,
+                type_id: <AudioBuf<f32, C>>::PORT_TYPE_ID,
+            }))
+            .collect(),
+        }
+    }
+
+    fn setup(&mut self, _ctx: &mut SetupCtx) {}
+
+    unsafe fn run(&mut self, ctx: &mut RunCtx, ports: &[Option<PortDataRaw>]) {
+        // SAFETY: The caller must provide the port layout we requested.
+        let output = unsafe { ports.get_unchecked(0) };
+
+        let Some(output) = output else { return };
+
+        // SAFETY: The caller must provide the port layout we requested.
+        let output = unsafe { output.downcast_mut_unchecked::<AudioBuf<f32, C>>() };
+
+        // SAFETY: The provided audio buffers must be at least as large as `ctx.sample_count`.
+        unsafe { output.clear_to_unchecked(ctx.sample_count) };
+
+        output.set_silent(true);
+
+        // SAFETY: The caller must provide the port layout we requested.
+        let inputs = unsafe { ports.get_unchecked(1..) };
+
+        for input in inputs.iter().copied().flatten() {
+            // SAFETY: The caller must provide the port layout we requested.
+            let input = unsafe { input.downcast_ref_unchecked::<AudioBuf<f32, C>>() };
+
+            if input.is_silent() {
+                continue;
+            }
+
+            output.set_silent(false);
+
+            for (dst, &src) in output
+                .as_mut_slice()
+                .iter_mut()
+                .zip(input.as_slice())
+                .take(ctx.sample_count)
+            {
+                *dst += src;
             }
         }
     }

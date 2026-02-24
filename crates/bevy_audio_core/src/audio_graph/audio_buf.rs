@@ -1,6 +1,11 @@
 use bytemuck::Zeroable;
 
 pub struct AudioBuf<T, const C: usize> {
+    /// # Invariants
+    ///
+    /// * When `true`, then `data` must be assumed to contain only zeros. Note that the reciprocal
+    ///   isn't necessarily true.
+    silent: bool,
     // TODO: Store the frame count instead of the total sample count.
     // TODO: Align each channel buffer to 64 bytes so that we can use huge SIMD instructions when
     // iterating over it.
@@ -13,6 +18,7 @@ impl<T, const C: usize> AudioBuf<T, C> {
         T: Zeroable,
     {
         Self {
+            silent: true,
             data: bytemuck::zeroed_slice_box(capacity.checked_mul(C).expect("Capacity overflow")),
         }
     }
@@ -30,12 +36,37 @@ impl<T, const C: usize> AudioBuf<T, C> {
         &mut self.data
     }
 
+    pub fn set_silent(&mut self, silent: bool) {
+        self.silent = silent;
+    }
+
+    pub fn is_silent(&self) -> bool {
+        self.silent
+    }
+
     pub fn clear(&mut self)
     where
         T: Zeroable,
     {
         // SAFETY: `T` is zeroable, so we can safely write zeros on it.
+        // TODO: Once the buffers are aligned to some higher power of two, we can use
+        // optimized SIMD methods to clear the buffer.
         unsafe { std::ptr::write_bytes(self.data.as_mut_ptr(), 0x00, self.data.len()) };
+    }
+
+    /// # Safety
+    ///
+    /// * `count` must be less than or equal to the buffer's frame count.
+    pub unsafe fn clear_to_unchecked(&mut self, count: usize)
+    where
+        T: Zeroable,
+    {
+        debug_assert!(count < self.frame_count());
+        for channel in self.channels_mut() {
+            // TODO: Once the buffers are aligned to some higher power of two, we can use
+            // optimized SIMD methods to clear the buffer.
+            unsafe { std::ptr::write_bytes(channel.as_mut_ptr(), 0x00, count) };
+        }
     }
 
     /// # Safety
@@ -169,6 +200,7 @@ impl<T, const C: usize> Default for AudioBuf<T, C> {
     fn default() -> Self {
         Self {
             data: Vec::new().into_boxed_slice(),
+            silent: true,
         }
     }
 }

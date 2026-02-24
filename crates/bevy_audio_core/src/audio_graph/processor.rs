@@ -43,6 +43,7 @@ pub trait Processor: 'static + Send {
     /// # Safety
     ///
     /// * `ports` must match the layout specified by [`info()`].
+    /// * The audio buffers must be at least as large as `ctx.sample_count`.
     ///
     /// [`info()`]: Processor::info
     unsafe fn run(&mut self, ctx: &mut RunCtx, ports: &[Option<PortDataRaw>]);
