@@ -12,11 +12,27 @@ pub type EdgeId = usize;
 
 struct NodeRunner {
     info: ProcessorInfo,
-    edges: Box<[EdgeId]>,
     processor: Box<dyn Processor>,
+
+    /// # Invariants
+    ///
+    /// Can be either a valid indices into the [`AudioGraphRunner::edges`] list, or `EdgeId::MAX`
+    /// (unconnected port).
+    edges: Box<[EdgeId]>,
+    /// # Invariants
+    ///
+    /// Contains no duplicates. All [`NodeId`]s are valid into the [`AudioGraphRunner::nodes`] list.
     dependencies: Vec<NodeId>,
+    /// # Invariants
+    ///
+    /// Contains no duplicates. All [`NodeId`]s are valid into the [`AudioGraphRunner::nodes`] list.
     dependents: Vec<NodeId>,
 
+    /// Only used during graph execution. Contains the number of dependencies of this node
+    /// that haven't yet finished executing.
+    ///
+    /// When this number reaches zero, the node is scheduled for running.
+    ///
     /// NOTE: Can be turned into an `AtomicUsize` if we want to execute the graph in parallel.
     pending_dependencies: Cell<usize>,
 }
@@ -52,9 +68,22 @@ impl PortDataAllocator {
 #[derive(Debug)]
 pub struct EdgeData {
     type_id: PortTypeId,
+
+    /// # Invariants
+    ///
+    /// * If `external` is `true`, then this is always `Some(_)` after the graph
+    ///   is built. External edges have their own [`PortDataBox`] which isn't taken from the
+    ///   allocator.
+    /// * If `external` is `false`, then this is `Some(_)` during graph execution if the node
+    ///   has `pending_inputs > 0`.
     data: Option<PortDataBox>,
+
     total_inputs: usize,
+    /// # Invariants
+    ///
+    /// This is always less or equal to `total_inputs`.
     pending_inputs: usize,
+
     external: bool,
 }
 
@@ -313,6 +342,12 @@ pub struct AudioGraphRunner {
     edges: Vec<EdgeData>,
     port_data_allocator: PortDataAllocator,
     port_data: Vec<Option<PortDataRaw>>,
+
+    /// # Invariants
+    ///
+    /// * Must be large enough to hold all nodes that might become ready at the same time during
+    ///   graph execution without reallocating.
+    /// * All stored node IDs are valid indices into `self.nodes`.
     ready_queue: Vec<NodeId>,
 }
 
@@ -409,15 +444,16 @@ impl AudioGraphRunner {
                         } else {
                             let data = self.port_data_allocator.allocate(port_info.type_id);
                             debug_assert!(data.is_some());
-                            // SAFETY: The graph is prepared such that all needed buffers
-                            // are pre-allocated.
+                            // SAFETY: During `build()`, sufficient buffers are pre-allocated for
+                            // all edges. Non-external edges have their buffers deallocated to the
+                            // allocator, ensuring availability during execution.
                             let data = unsafe { data.unwrap_unchecked() };
 
                             debug_assert!(edge.data.is_none());
 
-                            // SAFETY: We are initializing the slot. We know it's not initialized
-                            // yet. This `assert_unchecked` ensures that `edge.data.insert` bellow
-                            // won't branch to run the destructor of an eventual previous value.
+                            // SAFETY: Non-external output edges have `data = None` at the start
+                            // of processing. This hint eliminates the branch in `Option::insert`
+                            // that would drop an existing value.
                             unsafe { assert_unchecked(edge.data.is_none()) };
 
                             edge.data.insert(data)
@@ -429,8 +465,9 @@ impl AudioGraphRunner {
 
                         edge.pending_inputs -= 1;
 
-                        // SAFETY: If we need an input, then the data must already be
-                        // initialized.
+                        // SAFETY: Input ports only execute after their source has produced output.
+                        // The topological ordering guarantees that `data` is `Some` when inputs
+                        // are processed.
                         unsafe { edge.data.as_mut().unwrap_unchecked() }
                     }
                 };
@@ -443,7 +480,7 @@ impl AudioGraphRunner {
             unsafe { node.processor.run(ctx, self.port_data.as_slice()) };
 
             for i in 0..node.edges.len() {
-                // SAFETY: `i < edges.len()`
+                // SAFETY: Loop bound ensures `i < node.edges.len()`
                 let edge_idx = unsafe { *node.edges.get_unchecked(i) };
 
                 if edge_idx == usize::MAX {
@@ -456,8 +493,8 @@ impl AudioGraphRunner {
                 if edge.pending_inputs == 0 && !edge.external {
                     debug_assert!(edge.data.is_some());
 
-                    // SAFETY: The edge just transitioned from `pending_inputs = 1` to
-                    // `pending_inputs = 0`, meaning that we previously had data.
+                    // SAFETY: Non-external edges with `pending_inputs = 0` have just finished processing
+                    // all inputs, so `data` must be `Some` (it was set when the output was produced).
                     self.port_data_allocator
                         .deallocate(unsafe { edge.data.take().unwrap_unchecked() });
                 }
