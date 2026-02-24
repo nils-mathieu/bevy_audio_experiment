@@ -1,0 +1,11 @@
+[package]
+name = "examples"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy_app = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_ecs = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_log = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_audio_core = { path = "../bevy_audio_core" }
+bevy_audio_cpal = { path = "../bevy_audio_cpal" }

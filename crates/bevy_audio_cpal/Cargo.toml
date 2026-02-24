@@ -1,0 +1,14 @@
+[package]
+name = "bevy_audio_cpal"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy_audio_core = { path = "../bevy_audio_core" }
+
+bevy_ecs = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_app = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_log = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+
+thiserror = "1"
+cpal = "0.17"
