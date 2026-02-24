@@ -210,8 +210,8 @@ mod tests {
 
     #[test]
     fn port_data_box_type_id() {
-        let mono = PortDataBox::new(AudioBuf::<f32, 1>::default());
-        let stereo = PortDataBox::new(AudioBuf::<f32, 2>::default());
+        let mono = PortDataBox::new(AudioBuf::<f32, 1>::new(0));
+        let stereo = PortDataBox::new(AudioBuf::<f32, 2>::new(0));
         let f32 = PortDataBox::new(Discrete::<f32>::default());
         let bool = PortDataBox::new(Discrete::<bool>::default());
 
@@ -223,8 +223,8 @@ mod tests {
 
     #[test]
     fn port_data_box_is() {
-        let mono = PortDataBox::new(AudioBuf::<f32, 1>::default());
-        let stereo = PortDataBox::new(AudioBuf::<f32, 2>::default());
+        let mono = PortDataBox::new(AudioBuf::<f32, 1>::new(0));
+        let stereo = PortDataBox::new(AudioBuf::<f32, 2>::new(0));
         let f32 = PortDataBox::new(Discrete::<f32>::default());
         let bool = PortDataBox::new(Discrete::<bool>::default());
 
@@ -238,8 +238,8 @@ mod tests {
 
     #[test]
     fn port_data_box_downcast_ref() {
-        let mono = PortDataBox::new(AudioBuf::<f32, 1>::default());
-        let stereo = PortDataBox::new(AudioBuf::<f32, 2>::default());
+        let mono = PortDataBox::new(AudioBuf::<f32, 1>::new(0));
+        let stereo = PortDataBox::new(AudioBuf::<f32, 2>::new(0));
         let f32 = PortDataBox::new(Discrete::<f32>::default());
         let bool = PortDataBox::new(Discrete::<bool>::default());
 

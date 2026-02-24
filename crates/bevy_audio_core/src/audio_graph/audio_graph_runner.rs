@@ -324,12 +324,8 @@ impl AudioGraphBuilder {
 
 fn create_port_data(type_id: PortTypeId, ctx: &mut SetupCtx) -> PortDataBox {
     match type_id {
-        PortTypeId::Stereo => {
-            PortDataBox::new(AudioBuf::<f32, 2>::with_capacity(ctx.max_sample_count))
-        }
-        PortTypeId::Mono => {
-            PortDataBox::new(AudioBuf::<f32, 1>::with_capacity(ctx.max_sample_count))
-        }
+        PortTypeId::Stereo => PortDataBox::new(AudioBuf::<f32, 2>::new(ctx.max_sample_count)),
+        PortTypeId::Mono => PortDataBox::new(AudioBuf::<f32, 1>::new(ctx.max_sample_count)),
         PortTypeId::F32 => PortDataBox::new(Discrete::<f32>::with_capacity(
             ctx.max_sample_count / 16,
             0.0,
