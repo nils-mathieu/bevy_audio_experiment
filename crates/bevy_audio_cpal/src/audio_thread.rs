@@ -94,6 +94,11 @@ pub fn initialize(
     desired_buffer_latency: Duration,
     desired_sample_rate: cpal::SampleRate,
 ) -> Result<(CpalStream, AudioThreadHandle), AudioThreadError> {
+    match device.description() {
+        Ok(desc) => bevy_log::info!("Initializing audio stream with device {desc:#?}"),
+        Err(err) => bevy_log::warn!("Failed to get device description: {err}"),
+    }
+
     let best_config_range = device
         .supported_output_configs()?
         .max_by(|range1, range2| {
@@ -173,11 +178,12 @@ pub fn initialize(
     bevy_log::info!(
         "\
         Creating output audio stream with:\n\
-        - Format: {format:?}\n\
-        - Buffer size: {driver_buffer_size} frames ({buffer_time:#?})\n\
-        - Sample rate: {sample_rate} Hz\n\
-        - Channels: {channels}\n\
+        {sp}  - Format: {format:?}\n\
+        {sp}  - Buffer size: {driver_buffer_size} frames ({buffer_time:#?})\n\
+        {sp}  - Sample rate: {sample_rate} Hz\n\
+        {sp}  - Channels: {channels}\
         ",
+        sp = "",
         channels = config.channels,
         buffer_time =
             Duration::from_secs_f64(driver_buffer_size as f64 / config.sample_rate as f64),
