@@ -90,6 +90,13 @@ pub struct ExternalSourceMixerVoice<const C: usize> {
 impl<const C: usize> ExternalSourceMixerVoice<C> {
     /// # Returns
     ///
+    /// The number of items that can currently be sent.
+    pub fn can_send(&mut self) -> usize {
+        self.producer.get().slots()
+    }
+
+    /// # Returns
+    ///
     /// Returns whether the frame was successfully sent.
     pub fn feed(&mut self, frame: [f32; C]) -> bool {
         self.producer.get().push(frame).is_ok()
@@ -145,6 +152,7 @@ impl<const C: usize> Drop for ExternalSourceMixerVoice<C> {
     }
 }
 
+#[derive(Clone)]
 pub struct ExternalSourceMixerHandle<const C: usize>(Arc<Mutex<ExternalSourceMixerHandleState<C>>>);
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]

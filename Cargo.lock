@@ -291,6 +291,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bevy_audio"
+version = "0.1.0"
+dependencies = [
+ "bevy_app",
+ "bevy_asset",
+ "bevy_audio_core",
+ "bevy_audio_cpal",
+ "bevy_ecs",
+ "bevy_reflect",
+ "bevy_tasks",
+ "dasp_sample",
+ "hound",
+]
+
+[[package]]
 name = "bevy_audio_core"
 version = "0.1.0"
 dependencies = [
@@ -313,15 +328,6 @@ dependencies = [
  "bevy_log",
  "cpal",
  "thiserror 1.0.69",
-]
-
-[[package]]
-name = "bevy_audio_files"
-version = "0.1.0"
-dependencies = [
- "bevy_asset",
- "bevy_audio_core",
- "hound",
 ]
 
 [[package]]
@@ -898,10 +904,13 @@ name = "examples"
 version = "0.0.0"
 dependencies = [
  "bevy_app",
+ "bevy_asset",
+ "bevy_audio",
  "bevy_audio_core",
  "bevy_audio_cpal",
  "bevy_ecs",
  "bevy_log",
+ "bevy_tasks",
 ]
 
 [[package]]

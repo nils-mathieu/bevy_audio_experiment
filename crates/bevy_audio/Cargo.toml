@@ -1,0 +1,24 @@
+[package]
+name = "bevy_audio"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["cpal", "wav"]
+
+wav = ["dep:hound"]
+cpal = ["bevy_audio_cpal"]
+
+[dependencies]
+bevy_audio_core = { path = "../bevy_audio_core", default-features = false }
+bevy_audio_cpal = { path = "../bevy_audio_cpal", default-features = false, optional = true }
+
+bevy_ecs = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_app = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_asset = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_reflect = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_tasks = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+
+
+hound = { version = "3", optional = true }
+dasp_sample = "0.11"

@@ -19,10 +19,6 @@ impl Default for CpalPlugin {
 
 impl Plugin for CpalPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<bevy_audio_core::AudioPlugin>() {
-            app.add_plugins(bevy_audio_core::AudioPlugin);
-        }
-
         match self::audio_thread::initialize_default(
             self.desired_buffer_latency,
             self.desired_sample_rate,

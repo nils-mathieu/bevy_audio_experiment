@@ -7,11 +7,14 @@ use {
 
 pub fn main() {
     App::new()
-        .add_plugins(bevy_log::LogPlugin {
-            level: bevy_log::Level::TRACE,
-            ..Default::default()
-        })
-        .add_plugins(bevy_audio_cpal::CpalPlugin::default())
+        .add_plugins((
+            bevy_log::LogPlugin {
+                level: bevy_log::Level::TRACE,
+                ..Default::default()
+            },
+            bevy_audio_core::AudioPlugin,
+            bevy_audio_cpal::CpalPlugin::default(),
+        ))
         .add_systems(Startup, initialize)
         .set_runner(examples::run_for(
             Duration::from_millis(200),

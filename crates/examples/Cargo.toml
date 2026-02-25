@@ -7,5 +7,9 @@ publish = false
 bevy_app = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
 bevy_ecs = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
 bevy_log = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_tasks = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+bevy_asset = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+
+bevy_audio = { path = "../bevy_audio" }
 bevy_audio_core = { path = "../bevy_audio_core" }
 bevy_audio_cpal = { path = "../bevy_audio_cpal" }
