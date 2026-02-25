@@ -11,7 +11,7 @@ pub struct CpalPlugin {
 impl Default for CpalPlugin {
     fn default() -> Self {
         Self {
-            desired_buffer_latency: Duration::from_millis(10),
+            desired_buffer_latency: Duration::from_millis(15),
             desired_sample_rate: 44100,
         }
     }

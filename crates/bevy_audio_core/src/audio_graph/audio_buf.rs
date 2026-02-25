@@ -91,14 +91,6 @@ impl<T, const C: usize> AudioBuf<T, C> {
         unsafe { self.frame_count.unchecked_mul(C) }
     }
 
-    pub fn as_slice(&self) -> &[T] {
-        unsafe { core::slice::from_raw_parts(self.as_ptr(), self.sample_count()) }
-    }
-
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), self.sample_count()) }
-    }
-
     pub fn set_silent(&mut self, silent: bool) {
         self.silent = silent;
     }
@@ -151,6 +143,36 @@ impl<T, const C: usize> AudioBuf<T, C> {
 
         // SAFETY: Caller must ensure that the channel index is within bounds.
         unsafe { &mut *get_channel_unchecked(self.as_mut_ptr(), self.frame_count(), channel) }
+    }
+
+    pub fn channel(&self, channel: usize) -> Option<&[T]> {
+        if channel < C {
+            // SAFETY: We just made sure that the provided index is valid.
+            unsafe {
+                Some(&*get_channel_unchecked(
+                    self.as_ptr().cast_mut(),
+                    self.frame_count(),
+                    channel,
+                ))
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn channel_mut(&mut self, channel: usize) -> Option<&mut [T]> {
+        if channel < C {
+            // SAFETY: We just made sure that the provided index is valid.
+            unsafe {
+                Some(&mut *get_channel_unchecked(
+                    self.as_mut_ptr(),
+                    self.frame_count(),
+                    channel,
+                ))
+            }
+        } else {
+            None
+        }
     }
 
     pub fn channels(&self) -> impl Iterator<Item = &[T]> {
@@ -226,6 +248,22 @@ impl<T, const C: usize> AudioBuf<T, C> {
         let frames = self.frame_count();
         (0..frames).flat_map(move |frame| {
             (0..C).map(move |channel| unsafe { &mut *get_ptr_unchecked(p, frames, channel, frame) })
+        })
+    }
+
+    pub fn flat_iter(&self) -> impl Iterator<Item = &T> {
+        let p = self.as_ptr().cast_mut();
+        let frames = self.frame_count();
+        (0..C).flat_map(move |c| {
+            (0..frames).map(move |f| unsafe { &*get_ptr_unchecked(p, frames, c, f) })
+        })
+    }
+
+    pub fn flat_iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        let p = self.as_ptr().cast_mut();
+        let frames = self.frame_count();
+        (0..C).flat_map(move |c| {
+            (0..frames).map(move |f| unsafe { &mut *get_ptr_unchecked(p, frames, c, f) })
         })
     }
 }

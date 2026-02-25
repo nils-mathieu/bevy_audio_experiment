@@ -138,4 +138,19 @@ mod tests {
 
         runner.run(&mut testing::run_ctx(5));
     }
+
+    #[test]
+    fn disconnected_output() {
+        let mut builder = AudioGraphRunner::builder();
+        let (processor, mut handle) = super::external_source::<1>(16);
+        builder.insert(Box::new(processor));
+        let mut runner = builder.build(&mut testing::setup_ctx(5));
+
+        handle.feed_iter([0.0, 1.0, 2.0, 3.0, 4.0].into_iter().map(|x| [x]));
+
+        runner.run(&mut testing::run_ctx(5));
+
+        // Verify that the producer has been properly emptied.
+        assert!(handle.feed([0.0]));
+    }
 }

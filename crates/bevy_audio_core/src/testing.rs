@@ -37,7 +37,7 @@ where
         assert!(out.is_none_or(|buf| !buf.is_silent()));
         let actual = out
             .into_iter()
-            .flat_map(|x| x.as_slice())
+            .flat_map(|x| x.flat_iter())
             .take(ctx.sample_count);
         for (&actual, expected) in actual.zip(&mut iter) {
             assert_eq!(actual, expected);
@@ -51,7 +51,7 @@ pub fn assert_silent() -> impl Processor {
         assert!(out.is_none_or(|buf| buf.is_silent()));
         let actual = out
             .into_iter()
-            .flat_map(|x| x.as_slice())
+            .flat_map(|x| x.flat_iter())
             .take(ctx.sample_count);
         for &actual in actual {
             assert_eq!(actual, 0.0);

@@ -55,13 +55,11 @@ where
             output_buf.set_silent(false);
 
             for (dst, src) in output_buf
-                .frames_mut()
-                .zip(input_buf.frames())
+                .flat_iter_mut()
+                .zip(input_buf.flat_iter())
                 .take(ctx.sample_count)
             {
-                for (dst, src) in dst.into_iter().zip(src) {
-                    *dst = (self.0)(ctx, *src);
-                }
+                *dst = (self.0)(ctx, *src);
             }
         }
     }

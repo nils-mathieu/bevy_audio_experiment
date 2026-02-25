@@ -510,7 +510,7 @@ mod tests {
             .downcast_ref::<AudioBuf<f32, 1>>()
             .unwrap();
 
-        assert_eq!(&data.as_slice()[0..3], &[1.0, 2.0, 3.0]);
+        assert_eq!(&data.channel(0).unwrap()[0..3], &[1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -526,9 +526,9 @@ mod tests {
             .downcast_mut::<AudioBuf<f32, 1>>()
             .unwrap();
 
-        data.as_mut_slice()[0] = 1.0;
-        data.as_mut_slice()[1] = 2.0;
-        data.as_mut_slice()[2] = 4.0;
+        data.channel_mut(0).unwrap()[0] = 1.0;
+        data.channel_mut(0).unwrap()[1] = 2.0;
+        data.channel_mut(0).unwrap()[2] = 4.0;
         data.set_silent(false);
 
         runner.run(&mut testing::run_ctx(3));

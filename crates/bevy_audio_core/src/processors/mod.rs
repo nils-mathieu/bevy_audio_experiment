@@ -7,6 +7,9 @@ pub use self::discard::*;
 mod external_source;
 pub use self::external_source::*;
 
+mod external_source_mixer;
+pub use self::external_source_mixer::*;
+
 mod map_audio;
 pub use self::map_audio::*;
 

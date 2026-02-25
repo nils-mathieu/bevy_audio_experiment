@@ -50,7 +50,6 @@ where
 
         // SAFETY: The provided audio buffers must be at least as large as `ctx.sample_count`.
         unsafe { output.clear_to_unchecked(ctx.sample_count) };
-
         output.set_silent(true);
 
         // SAFETY: The caller must provide the port layout we requested.
@@ -67,9 +66,8 @@ where
             output.set_silent(false);
 
             for (dst, &src) in output
-                .as_mut_slice()
-                .iter_mut()
-                .zip(input.as_slice())
+                .flat_iter_mut()
+                .zip(input.flat_iter())
                 .take(ctx.sample_count)
             {
                 *dst += src;
