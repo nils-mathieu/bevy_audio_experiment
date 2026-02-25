@@ -8,6 +8,45 @@ use {
     std::marker::PhantomData,
 };
 
+pub fn silence<const C: usize>() -> Silence<C> {
+    Silence
+}
+
+pub struct Silence<const C: usize>;
+
+impl<const C: usize> Processor for Silence<C>
+where
+    AudioBuf<f32, C>: PortType,
+{
+    fn info(&self) -> ProcessorInfo {
+        ProcessorInfo {
+            ports: vec![PortDescription {
+                name: Some(Cow::Borrowed("output")),
+                direction: PortDirection::Output,
+                type_id: <AudioBuf<f32, C>>::PORT_TYPE_ID,
+            }],
+        }
+    }
+
+    fn setup(&mut self, _ctx: &mut SetupCtx) {}
+
+    unsafe fn run(&mut self, ctx: &mut RunCtx, ports: &[Option<PortDataRaw>]) {
+        // SAFETY: Caller must ensure that the ports match the layout we requested.
+        let output = unsafe { ports.get_unchecked(0) };
+
+        if let Some(output) = output {
+            // SAFETY: Caller must ensure that the port is of the correct type.
+            let buf = unsafe { output.downcast_mut_unchecked::<AudioBuf<f32, C>>() };
+
+            buf.set_silent(true);
+
+            // SAFETY: Caller must ensure that audio buffers are at least as large as
+            // `sample_count`.
+            unsafe { buf.clear_to_unchecked(ctx.sample_count) };
+        }
+    }
+}
+
 pub fn audio_fn<F, const C: usize>(f: F) -> AudioFn<F, C>
 where
     AudioBuf<f32, C>: PortType,
@@ -320,7 +359,7 @@ where
         ProcessorInfo {
             ports: core::iter::once(PortDescription {
                 name: Some(Cow::Borrowed("output")),
-                direction: PortDirection::Input,
+                direction: PortDirection::Output,
                 type_id: <AudioBuf<f32, C>>::PORT_TYPE_ID,
             })
             .chain((0..self.inputs).map(|_| PortDescription {
@@ -397,7 +436,7 @@ impl<const C: usize> ExternalSourceHandle<C> {
     /// # Returns
     ///
     /// Returns the number of items sent.
-    pub fn feed_iter(&mut self, samples: &mut impl Iterator<Item = [f32; C]>) -> usize {
+    pub fn feed_iter(&mut self, samples: impl IntoIterator<Item = [f32; C]>) -> usize {
         let producer = self.0.get();
         producer
             .write_chunk_uninit(producer.slots())
@@ -458,5 +497,92 @@ where
             // Consume the data even if nothing is connected.
             data.commit_all();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{audio_graph::AudioGraphRunner, testing};
+
+    #[test]
+    fn sum_sources() {
+        let mut builder = AudioGraphRunner::builder();
+        let a = builder.insert(Box::new(testing::audio_iter([1.0, 2.0, 3.0])));
+        let b = builder.insert(Box::new(testing::audio_iter([4.0, 5.0, 6.0])));
+        let c = builder.insert(Box::new(testing::audio_iter([7.0, 0.0, 7.0])));
+        let sum = builder.insert(Box::new(super::sum_audio::<1>(3)));
+        let out = builder.insert(Box::new(testing::assert_sink([12.0, 7.0, 17.0])));
+        builder.connect(a, 0, sum, 1);
+        builder.connect(b, 0, sum, 2);
+        builder.connect(c, 0, sum, 3);
+        builder.connect(sum, 0, out, 0);
+        let mut runner = builder.build(&mut testing::setup_ctx(3));
+        runner.run(&mut testing::run_ctx(0));
+    }
+
+    #[test]
+    fn sum_no_sources() {
+        let mut builder = AudioGraphRunner::builder();
+        let sum = builder.insert(Box::new(super::sum_audio::<1>(3)));
+        let out = builder.insert(Box::new(testing::assert_silent()));
+        builder.connect(sum, 0, out, 0);
+        let mut runner = builder.build(&mut testing::setup_ctx(3));
+        runner.run(&mut testing::run_ctx(0));
+    }
+
+    #[test]
+    fn sum_silent_sources() {
+        let mut builder = AudioGraphRunner::builder();
+        let a = builder.insert(Box::new(super::silence::<1>()));
+        let b = builder.insert(Box::new(super::silence::<1>()));
+        let c = builder.insert(Box::new(super::silence::<1>()));
+        let sum = builder.insert(Box::new(super::sum_audio::<1>(3)));
+        let out = builder.insert(Box::new(testing::assert_silent()));
+        builder.connect(a, 0, sum, 1);
+        builder.connect(b, 0, sum, 2);
+        builder.connect(c, 0, sum, 3);
+        builder.connect(sum, 0, out, 0);
+        let mut runner = builder.build(&mut testing::setup_ctx(3));
+        runner.run(&mut testing::run_ctx(0));
+    }
+
+    #[test]
+    fn external_source() {
+        let mut builder = AudioGraphRunner::builder();
+        let (processor, mut handle) = super::external_source::<1>(16);
+        let s = builder.insert(Box::new(processor));
+        let out = builder.insert(Box::new(testing::assert_sink([0.0, 1.0, 2.0, 3.0, 4.0])));
+        builder.connect(s, 0, out, 0);
+        let mut runner = builder.build(&mut testing::setup_ctx(5));
+
+        handle.feed_iter([0.0, 1.0, 2.0, 3.0, 4.0].into_iter().map(|x| [x]));
+
+        runner.run(&mut testing::run_ctx(5));
+    }
+
+    #[test]
+    fn external_source_disconnected() {
+        let mut builder = AudioGraphRunner::builder();
+        let (processor, handle) = super::external_source::<1>(16);
+        drop(handle);
+        let s = builder.insert(Box::new(processor));
+        let out = builder.insert(Box::new(testing::assert_silent()));
+        builder.connect(s, 0, out, 0);
+        let mut runner = builder.build(&mut testing::setup_ctx(5));
+        runner.run(&mut testing::run_ctx(5));
+    }
+
+    #[test]
+    fn external_source_underrun() {
+        let mut builder = AudioGraphRunner::builder();
+        let (processor, mut handle) = super::external_source::<1>(16);
+        let s = builder.insert(Box::new(processor));
+        let out = builder.insert(Box::new(testing::assert_sink([0.0, 1.0, 2.0, 0.0, 0.0])));
+        builder.connect(s, 0, out, 0);
+        let mut runner = builder.build(&mut testing::setup_ctx(5));
+
+        handle.feed_iter([0.0, 1.0, 2.0].into_iter().map(|x| [x]));
+
+        runner.run(&mut testing::run_ctx(5));
     }
 }

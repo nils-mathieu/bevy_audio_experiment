@@ -11,6 +11,9 @@ pub mod processors;
 
 pub mod entity;
 
+#[cfg(test)]
+mod testing;
+
 pub mod prelude {
     pub use crate::entity::{AudioGraphOutput, CommandsExt as _};
 }

@@ -120,11 +120,12 @@ impl<T, const C: usize> AudioBuf<T, C> {
     /// # Safety
     ///
     /// * `count` must be less than or equal to the buffer's frame count.
+    #[track_caller]
     pub unsafe fn clear_to_unchecked(&mut self, count: usize)
     where
         T: Zeroable,
     {
-        debug_assert!(count < self.frame_count());
+        debug_assert!(count <= self.frame_count());
         for channel in self.channels_mut() {
             // TODO: Once the buffers are aligned to some higher power of two, we can use
             // optimized SIMD methods to clear the buffer.

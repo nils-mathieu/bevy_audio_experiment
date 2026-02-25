@@ -440,115 +440,69 @@ mod tests {
     use {
         super::AudioGraphRunner,
         crate::{
-            audio_graph::{AudioBuf, Processor, RunCtx, SetupCtx},
-            processors,
+            audio_graph::{AudioBuf, RunCtx},
+            processors, testing,
         },
     };
 
-    fn run_ctx(sample_count: usize) -> RunCtx {
-        RunCtx {
-            sample_count,
-            sample_rate: 44100,
-            sample_rate_recip: 44100f64.recip(),
-        }
-    }
-
-    fn setup_ctx(max_sample_count: usize) -> SetupCtx {
-        SetupCtx {
-            max_sample_count,
-            sample_rate: 44100,
-            sample_rate_recip: 44100f64.recip(),
-        }
-    }
-
-    fn map_audio(mut f: impl 'static + Send + FnMut(f32) -> f32) -> impl Processor {
-        processors::map_audio::<_, 1>(move |_: &mut RunCtx, x| f(x))
-    }
-
-    fn assert_sink<I>(expected: I) -> impl Processor
-    where
-        I: IntoIterator<Item = f32>,
-        I::IntoIter: 'static + Send + ExactSizeIterator,
-    {
-        let mut iter = expected.into_iter();
-        processors::sink_fn(move |ctx: &mut RunCtx, out: Option<&AudioBuf<f32, 1>>| {
-            let actual = out
-                .into_iter()
-                .flat_map(|x| x.as_slice())
-                .take(ctx.sample_count);
-            for (&actual, expected) in actual.zip(&mut iter) {
-                assert_eq!(actual, expected);
-            }
-        })
-    }
-
-    fn audio_iter<I>(iter: I) -> impl Processor
-    where
-        I: IntoIterator<Item = f32>,
-        I::IntoIter: 'static + Send,
-    {
-        let mut iter = iter.into_iter();
-        processors::audio_fn(move |_: &mut RunCtx| [iter.next().unwrap()])
-    }
-
     #[test]
     fn empty_runner() {
-        let mut runner = AudioGraphRunner::builder().build(&mut setup_ctx(16));
-        runner.run(&mut run_ctx(16));
-        runner.run(&mut run_ctx(8));
+        let mut runner = AudioGraphRunner::builder().build(&mut testing::setup_ctx(16));
+        runner.run(&mut testing::run_ctx(16));
+        runner.run(&mut testing::run_ctx(8));
     }
 
     #[test]
     fn one_node() {
         let mut builder = AudioGraphRunner::builder();
-        builder.insert(Box::new(map_audio(|x| x * 2.0)));
-        let mut runner = builder.build(&mut setup_ctx(8));
-        runner.run(&mut run_ctx(8));
-        runner.run(&mut run_ctx(4));
+        builder.insert(Box::new(testing::map_audio(|x| x * 2.0)));
+        let mut runner = builder.build(&mut testing::setup_ctx(8));
+        runner.run(&mut testing::run_ctx(8));
+        runner.run(&mut testing::run_ctx(4));
     }
 
     #[test]
     fn source_and_sink_basic() {
         let mut builder = AudioGraphRunner::builder();
-        let sink_id = builder.insert(Box::new(assert_sink([1.0, 2.0, 3.0])));
-        let source_id = builder.insert(Box::new(audio_iter([1.0, 2.0, 3.0])));
+        let sink_id = builder.insert(Box::new(testing::assert_sink([1.0, 2.0, 3.0])));
+        let source_id = builder.insert(Box::new(testing::audio_iter([1.0, 2.0, 3.0])));
         builder.connect(source_id, 0, sink_id, 0);
-        let mut runner = builder.build(&mut setup_ctx(3));
-        runner.run(&mut run_ctx(3));
+        let mut runner = builder.build(&mut testing::setup_ctx(3));
+        runner.run(&mut testing::run_ctx(3));
     }
 
     #[test]
     fn source_and_sink_three_runs() {
         let mut builder = AudioGraphRunner::builder();
-        let sink_id = builder.insert(Box::new(assert_sink([1.0, 2.0, 3.0])));
-        let source_id = builder.insert(Box::new(audio_iter([1.0, 2.0, 3.0])));
+        let sink_id = builder.insert(Box::new(testing::assert_sink([1.0, 2.0, 3.0])));
+        let source_id = builder.insert(Box::new(testing::audio_iter([1.0, 2.0, 3.0])));
         builder.connect(source_id, 0, sink_id, 0);
-        let mut runner = builder.build(&mut setup_ctx(3));
-        runner.run(&mut run_ctx(1));
-        runner.run(&mut run_ctx(1));
-        runner.run(&mut run_ctx(1));
+        let mut runner = builder.build(&mut testing::setup_ctx(3));
+        runner.run(&mut testing::run_ctx(1));
+        runner.run(&mut testing::run_ctx(1));
+        runner.run(&mut testing::run_ctx(1));
     }
 
     #[test]
     fn basic_processing() {
         let mut builder = AudioGraphRunner::builder();
-        let source_id = builder.insert(Box::new(audio_iter([1.0, 2.0, 3.0])));
-        let double_id = builder.insert(Box::new(map_audio(|x| x * 2.0)));
-        let sink_id = builder.insert(Box::new(assert_sink([2.0, 4.0, 6.0])));
+        let source_id = builder.insert(Box::new(testing::audio_iter([1.0, 2.0, 3.0])));
+        let double_id = builder.insert(Box::new(testing::map_audio(|x| x * 2.0)));
+        let sink_id = builder.insert(Box::new(testing::assert_sink([2.0, 4.0, 6.0])));
         builder.connect(source_id, 0, double_id, 0);
         builder.connect(double_id, 1, sink_id, 0);
-        let mut runner = builder.build(&mut setup_ctx(3));
-        runner.run(&mut run_ctx(3));
+        let mut runner = builder.build(&mut testing::setup_ctx(3));
+        runner.run(&mut testing::run_ctx(3));
     }
 
     #[test]
     fn basic_external_output() {
         let mut builder = AudioGraphRunner::builder();
-        let source_id = builder.insert(Box::new(audio_iter([1.0, 2.0, 3.0])));
+        let source_id = builder.insert(Box::new(testing::audio_iter([1.0, 2.0, 3.0])));
         let edge_id = builder.connect_external(source_id, 0);
-        let mut runner = builder.build(&mut setup_ctx(8));
+        let mut runner = builder.build(&mut testing::setup_ctx(8));
 
-        runner.run(&mut run_ctx(3));
+        runner.run(&mut testing::run_ctx(3));
 
         let data = runner
             .get_external_edge(edge_id)
@@ -562,9 +516,9 @@ mod tests {
     #[test]
     fn basic_external_input() {
         let mut builder = AudioGraphRunner::builder();
-        let sink_id = builder.insert(Box::new(assert_sink([1.0, 2.0, 4.0])));
+        let sink_id = builder.insert(Box::new(testing::assert_sink([1.0, 2.0, 4.0])));
         let edge_id = builder.connect_external(sink_id, 0);
-        let mut runner = builder.build(&mut setup_ctx(8));
+        let mut runner = builder.build(&mut testing::setup_ctx(8));
 
         let data = runner
             .get_external_edge_mut(edge_id)
@@ -575,15 +529,16 @@ mod tests {
         data.as_mut_slice()[0] = 1.0;
         data.as_mut_slice()[1] = 2.0;
         data.as_mut_slice()[2] = 4.0;
+        data.set_silent(false);
 
-        runner.run(&mut run_ctx(3));
+        runner.run(&mut testing::run_ctx(3));
     }
 
     #[test]
     #[should_panic = "`src` node is invalid"]
     fn connect_invalid_src_node() {
         let mut builder = AudioGraphRunner::builder();
-        let valid_id = builder.insert(Box::new(assert_sink([])));
+        let valid_id = builder.insert(Box::new(testing::assert_sink([])));
         builder.connect(12, 0, valid_id, 0);
     }
 
@@ -591,7 +546,7 @@ mod tests {
     #[should_panic = "`dst` node is invalid"]
     fn connect_invalid_dst_node() {
         let mut builder = AudioGraphRunner::builder();
-        let valid_id = builder.insert(Box::new(audio_iter([])));
+        let valid_id = builder.insert(Box::new(testing::audio_iter([])));
         builder.connect(valid_id, 0, 12, 0);
     }
 
@@ -599,7 +554,7 @@ mod tests {
     #[should_panic = "Can't connect a node to itself"]
     fn connect_node_to_itself() {
         let mut builder = AudioGraphRunner::builder();
-        let valid_id = builder.insert(Box::new(map_audio(|x| x)));
+        let valid_id = builder.insert(Box::new(testing::map_audio(|x| x)));
         builder.connect(valid_id, 1, valid_id, 0);
     }
 
@@ -607,9 +562,9 @@ mod tests {
     #[should_panic = "Cycle introduced"]
     fn connect_creates_cycle() {
         let mut builder = AudioGraphRunner::builder();
-        let a = builder.insert(Box::new(map_audio(|x| x)));
-        let b = builder.insert(Box::new(map_audio(|x| x)));
-        let c = builder.insert(Box::new(map_audio(|x| x)));
+        let a = builder.insert(Box::new(testing::map_audio(|x| x)));
+        let b = builder.insert(Box::new(testing::map_audio(|x| x)));
+        let c = builder.insert(Box::new(testing::map_audio(|x| x)));
         builder.connect(a, 1, b, 0);
         builder.connect(b, 1, c, 0);
         builder.connect(c, 1, a, 0);
@@ -619,8 +574,8 @@ mod tests {
     #[should_panic = "`src_port` is invalid"]
     fn connect_invalid_src_port() {
         let mut builder = AudioGraphRunner::builder();
-        let src_id = builder.insert(Box::new(audio_iter([])));
-        let dst_id = builder.insert(Box::new(assert_sink([])));
+        let src_id = builder.insert(Box::new(testing::audio_iter([])));
+        let dst_id = builder.insert(Box::new(testing::assert_sink([])));
         builder.connect(src_id, 12, dst_id, 0);
     }
 
@@ -628,8 +583,8 @@ mod tests {
     #[should_panic = "`dst_port` is invalid"]
     fn connect_invalid_dst_port() {
         let mut builder = AudioGraphRunner::builder();
-        let src_id = builder.insert(Box::new(audio_iter([])));
-        let dst_id = builder.insert(Box::new(assert_sink([])));
+        let src_id = builder.insert(Box::new(testing::audio_iter([])));
+        let dst_id = builder.insert(Box::new(testing::assert_sink([])));
         builder.connect(src_id, 0, dst_id, 12);
     }
 
@@ -637,8 +592,8 @@ mod tests {
     #[should_panic = "`src_port` must be an output port"]
     fn connect_invalid_src_port_direction() {
         let mut builder = AudioGraphRunner::builder();
-        let src_id = builder.insert(Box::new(assert_sink([])));
-        let dst_id = builder.insert(Box::new(assert_sink([])));
+        let src_id = builder.insert(Box::new(testing::assert_sink([])));
+        let dst_id = builder.insert(Box::new(testing::assert_sink([])));
         builder.connect(src_id, 0, dst_id, 0);
     }
 
@@ -646,8 +601,8 @@ mod tests {
     #[should_panic = "`dst_port` must be an input port"]
     fn connect_invalid_dst_port_direction() {
         let mut builder = AudioGraphRunner::builder();
-        let src_id = builder.insert(Box::new(audio_iter([])));
-        let dst_id = builder.insert(Box::new(audio_iter([])));
+        let src_id = builder.insert(Box::new(testing::audio_iter([])));
+        let dst_id = builder.insert(Box::new(testing::audio_iter([])));
         builder.connect(src_id, 0, dst_id, 0);
     }
 
@@ -675,7 +630,7 @@ mod tests {
     #[should_panic = "`port` is not a valid port for the node"]
     fn connect_external_invalid_port() {
         let mut builder = AudioGraphRunner::builder();
-        let id = builder.insert(Box::new(audio_iter([])));
+        let id = builder.insert(Box::new(testing::audio_iter([])));
         builder.connect_external(id, 100);
     }
 
