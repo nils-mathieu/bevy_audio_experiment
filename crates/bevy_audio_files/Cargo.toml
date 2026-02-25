@@ -1,0 +1,10 @@
+[package]
+name = "bevy_audio_files"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy_audio_core = { path = "../bevy_audio_core", default-features = false }
+bevy_asset = { git = "https://github.com/bevyengine/bevy.git", default-features = false }
+
+hound = "3"
